@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Anatomy Mapper - V12: Botões de Forma Restaurados</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.1/fabric.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            color: #333; 
+        }
+        #myCanvas {
+            border: 2px solid #333;
+            background-color: #f7f7f7; 
+            cursor: default; 
+            /* Definimos o fundo da canvas para ser a imagem do osso */
+            background-image: url('bone_shape.png'); /* Certifique-se de que esta imagem esteja na mesma pasta */
+            background-size: contain; 
+            background-repeat: no-repeat;
+            background-position: center;
+        }
+        button {
+            padding: 10px 15px;
+            margin-right: 10px;
+            cursor: pointer;
+            margin-bottom: 15px;
+            background-color: #eee;
+            border: 1px solid #ccc;
+            color: #333;
+        }
+        .form-buttons button { background-color: #ddd; border-color: #bbb; }
+        .action-buttons button { background-color: #ccc; border-color: #999; }
+
+        /* Estilos para o Modal de Lesão (Diálogo) */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+        .modal-content {
+            background: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.2);
+            width: 300px;
+        }
+        .modal-content label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: bold;
+        }
+        .modal-content input[type="number"] {
+            width: 90%;
+            padding: 8px;
+            margin-bottom: 15px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+        .modal-actions {
+            text-align: right;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+
+    <h2>Anatomy Mapper - Mapeamento Patológico</h2>
+    
+    <h3>1. Selecionar Peça Base</h3>
+    <div class="form-buttons">
+        <button onclick="drawForm('breast')">Mama (Elipse)</button>
+        <button onclick="drawForm('bone_img')">Osso (Imagem Base)</button>
+    </div>
+    
+    <h3>2. Ferramentas</h3>
+    <div class="action-buttons">
+        <button onclick="showLesionModal()">🔪 Adicionar Lesão c/ Cortes</button>
+        <button onclick="downloadImage()">⬇️ Baixar Imagem (PNG)</button>
+    </div>
+    <p style="font-size: 0.9em; color: #666;">Use **Ctrl+Z** para desfazer e **Delete/Backspace** para remover objetos selecionados.</p>
+    <br>
+    
+    <canvas id="myCanvas" width="800" height="500"></canvas>
+
+    <div id="lesionModal" class="modal-overlay">
+        <div class="modal-content">
+            <h3>Configurar Lesão</h3>
+            
+            <label for="cutsTransversal">Cortes Transversais (Seções X):</label>
+            <input type="number" id="cutsTransversal" value="1" min="1">
+
+            <label for="cutsLongitudinal">Cortes Longitudinais (Seções Y):</label>
+            <input type="number" id="cutsLongitudinal" value="1" min="1">
+            
+            <hr>
+            <label for="lesionWidth">Largura (cm):</label>
+            <input type="number" id="lesionWidth" value="3.0" min="0.1" step="0.1">
+
+            <label for="lesionHeight">Comprimento (cm):</label>
+            <input type="number" id="lesionHeight" value="3.0" min="0.1" step="0.1">
+
+            <div class="modal-actions">
+                <button onclick="hideLesionModal()">Cancelar</button>
+                <button onclick="processLesionData()">Adicionar</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let canvas; 
+        let history = []; 
+        let historyPointer = -1; 
+        let isRedoing = false; 
+        
+        const LESION_RADIUS = 50; 
+        const LESION_DIAMETER = LESION_RADIUS * 2;
+        const UNIT = 'cm'; 
+        const BONE_IMAGE_URL = 'osso.png'; // Caminho para a imagem do osso
+
+        document.addEventListener('DOMContentLoaded', () => {
+            canvas = new fabric.Canvas('myCanvas');
+            window.CANVAS_CENTER_X = canvas.width / 2;
+            window.CANVAS_CENTER_Y = canvas.height / 2;
+
+            // Carrega a forma inicial ao carregar a página
+            drawForm('bone_img'); 
+            
+            canvas.on('object:modified', saveState);
+            canvas.on('object:removed', saveState); 
+
+            document.addEventListener('keydown', (e) => {
+                if (e.key === 'z' && (e.ctrlKey || e.metaKey)) {
+                    e.preventDefault(); 
+                    undo();
+                }
+                if (e.key === 'Delete' || e.key === 'Backspace') {
+                    const activeObject = canvas.getActiveObject();
+                    if (activeObject) {
+                        canvas.remove(activeObject);
+                        saveState(); 
+                        e.preventDefault(); 
+                    }
+                }
+            });
+        });
+
+        // --- LÓGICA DE UNDO/REDO ---
+        function saveState() {
+            if (isRedoing) return; 
+            history = history.slice(0, historyPointer + 1);
+            const json = canvas.toJSON(['type', 'subType', 'widthValue', 'heightValue', 'backgroundImage']); 
+            history.push(json);
+            historyPointer = history.length - 1;
+            if (history.length > 50) {
+                history.shift(); 
+                historyPointer--;
+            }
+        }
+
+        function undo() {
+            if (historyPointer > 0) {
+                isRedoing = true; 
+                historyPointer--;
+                canvas.loadFromJSON(history[historyPointer], () => {
+                    canvas.renderAll();
+                    isRedoing = false; 
+                });
+            }
+        }
+        
+        // ----------------------------------------------------------------------
+        // 1. FUNÇÕES DE FORMAS BASE
+        // ----------------------------------------------------------------------
+
+        function drawForm(shapeType) {
+            canvas.clear(); // Limpa objetos para nova forma
+
+            if (shapeType === 'breast') {
+                // Desenha a elipse como um objeto para ser selecionável/movível
+                const breastShape = new fabric.Ellipse({
+                    rx: 300, ry: 180, fill: 'white', 
+                    stroke: 'black', strokeWidth: 4,
+                    originX: 'center', originY: 'center',
+                    left: CANVAS_CENTER_X, top: CANVAS_CENTER_Y,
+                    selectable: true, evented: true, hasControls: true, lockRotation: true,
+                    type: 'baseShape', subType: shapeType
+                });
+                canvas.add(breastShape);
+                // Remove qualquer imagem de fundo definida anteriormente
+                canvas.setBackgroundImage(null, canvas.renderAll.bind(canvas));
+                
+            } else if (shapeType === 'bone_img') {
+                // Configura a imagem do osso como fundo estático do canvas
+                fabric.Image.fromURL(BONE_IMAGE_URL, function(img) {
+                    img.scaleToWidth(canvas.getWidth());
+                    img.scaleToHeight(canvas.getHeight());
+                    canvas.setBackgroundImage(img, canvas.renderAll.bind(canvas), {
+                        scaleX: canvas.getWidth() / img.width,
+                        scaleY: canvas.getHeight() / img.height,
+                        originX: 'center',
+                        originY: 'center',
+                        left: canvas.width / 2,
+                        top: canvas.height / 2
+                    });
+                    saveState();
+                });
+            }
+            
+            canvas.renderAll();
+            saveState();
+        }
+
+        // ----------------------------------------------------------------------
+        // 2. FUNÇÕES DE LESÃO, MODAL E ESCALA
+        // ----------------------------------------------------------------------
+        
+        function showLesionModal() {
+            document.getElementById('lesionModal').style.display = 'flex';
+        }
+
+        function hideLesionModal() {
+            document.getElementById('lesionModal').style.display = 'none';
+        }
+
+        function processLesionData() {
+            const cutsTransversal = parseInt(document.getElementById('cutsTransversal').value) || 1;
+            const cutsLongitudinal = parseInt(document.getElementById('cutsLongitudinal').value) || 1;
+            const widthValue = parseFloat(document.getElementById('lesionWidth').value) || 3.0;
+            const heightValue = parseFloat(document.getElementById('lesionHeight').value) || 3.0;
+
+            const x = CANVAS_CENTER_X; 
+            const y = CANVAS_CENTER_Y;
+
+            drawLesionWithCuts(x, y, LESION_DIAMETER, LESION_DIAMETER, cutsTransversal, cutsLongitudinal, widthValue, heightValue);
+            hideLesionModal();
+        }
+
+
+        /**
+         * Desenha a Lesão (Círculo Preto) com divisões internas, enumeração e régua.
+         */
+        function drawLesionWithCuts(x, y, width, height, sectionsTransversal, sectionsLongitudinal, widthValue, heightValue) {
+            if (!canvas) return; 
+            
+            const radius = width / 2;
+
+            // 1. Cria o Círculo (Lesão) - Inteiramente Preto
+            const lesionCircle = new fabric.Circle({
+                radius: radius,
+                left: 0,
+                top: 0,
+                fill: 'black',
+                stroke: 'transparent',
+                strokeWidth: 0,
+                originX: 'center',
+                originY: 'center',
+                type: 'lesionCircle' 
+            });
+
+            let cutLines = [];
+            let sectionNumbers = [];
+            let sectionCounter = 1;
+            
+            const totalWidth = width;
+            const totalHeight = height;
+
+            const spacingX = totalWidth / sectionsTransversal;
+            const spacingY = totalHeight / sectionsLongitudinal;
+            
+            // Desenha linhas e enumera seções
+            for (let i = 0; i < sectionsLongitudinal; i++) {
+                const yStart = -totalHeight / 2 + i * spacingY;
+                const yEnd = yStart + spacingY;
+                const midY = (yStart + yEnd) / 2;
+
+                if (i > 0) {
+                    const lineY = -totalHeight / 2 + i * spacingY;
+                    cutLines.push(new fabric.Line([-totalWidth / 2, lineY, totalWidth / 2, lineY], {
+                        stroke: 'white', strokeWidth: 1.5, selectable: false, evented: false, type: 'cutLine'
+                    }));
+                }
+
+                for (let j = 0; j < sectionsTransversal; j++) {
+                    const xStart = -totalWidth / 2 + j * spacingX;
+                    const xEnd = xStart + spacingX;
+                    const midX = (xStart + xEnd) / 2;
+                    
+                    if (j > 0) {
+                        const lineX = -totalWidth / 2 + j * spacingX;
+                        cutLines.push(new fabric.Line([lineX, -totalHeight / 2, lineX, totalHeight / 2], {
+                            stroke: 'white', strokeWidth: 1.5, selectable: false, evented: false, type: 'cutLine'
+                        }));
+                    }
+
+                    // Enumeração das Seções
+                    sectionNumbers.push(new fabric.Text(sectionCounter.toString(), {
+                        fontSize: 16, fill: 'white', left: midX, top: midY, originX: 'center', originY: 'center', type: 'sectionNumber',
+                    }));
+                    sectionCounter++;
+                }
+            }
+            
+            // 4. Cria a Régua de Escala
+            const ruler = createRuler(widthValue, heightValue, width, height);
+            
+            // 5. Agrupa tudo
+            const lesionGroup = new fabric.Group([lesionCircle, ...cutLines, ...sectionNumbers, ...ruler], {
+                left: x,
+                top: y,
+                originX: 'center',
+                originY: 'center',
+                selectable: true,
+                hasControls: true,
+                lockRotation: false,
+                type: 'lesionGroup',
+                widthValue: widthValue,
+                heightValue: heightValue 
+            });
+
+            canvas.add(lesionGroup);
+            lesionGroup.bringToFront(); 
+            canvas.renderAll();
+            
+            saveState(); 
+        }
+
+        /**
+         * Cria as linhas e textos para a régua de escala, incluindo 'cm' e texto horizontal.
+         */
+        function createRuler(widthValue, heightValue, containerWidth, containerHeight) {
+            const rulerElements = [];
+            const offset = 10; 
+            const tickSize = 5; 
+            const halfWidth = containerWidth / 2;
+            const halfHeight = containerHeight / 2;
+            const fillColor = 'black'; 
+
+            // --------------------------------
+            // Régua da LARGURA (Eixo X) - ABAIXO DA LESÃO
+            // --------------------------------
+            const textWidth = `${widthValue} ${UNIT}`;
+            const widthPosition = halfHeight + offset; 
+
+            rulerElements.push(new fabric.Line([-halfWidth, widthPosition, halfWidth, widthPosition], {
+                stroke: fillColor, strokeWidth: 1, originX: 'center', originY: 'center', type: 'ruler'
+            }));
+            rulerElements.push(new fabric.Line([-halfWidth, widthPosition - tickSize, -halfWidth, widthPosition + tickSize], { stroke: fillColor, strokeWidth: 1, originX: 'center', originY: 'center', type: 'ruler' }));
+            rulerElements.push(new fabric.Line([halfWidth, widthPosition - tickSize, halfWidth, widthPosition + tickSize], { stroke: fillColor, strokeWidth: 1, originX: 'center', originY: 'center', type: 'ruler' }));
+            
+            rulerElements.push(new fabric.Text(textWidth, {
+                fontSize: 14, fill: fillColor, left: 0, top: widthPosition + tickSize + 2, originX: 'center', originY: 'top', type: 'ruler'
+            }));
+
+            // --------------------------------
+            // Régua do COMPRIMENTO (Eixo Y) - À DIREITA DA LESÃO (Texto horizontal)
+            // --------------------------------
+            const textHeight = `${heightValue} ${UNIT}`;
+            const heightPosition = halfWidth + offset; 
+
+            rulerElements.push(new fabric.Line([heightPosition, -halfHeight, heightPosition, halfHeight], {
+                stroke: fillColor, strokeWidth: 1, originX: 'center', originY: 'center', type: 'ruler'
+            }));
+            rulerElements.push(new fabric.Line([heightPosition - tickSize, -halfHeight, heightPosition + tickSize, -halfHeight], { stroke: fillColor, strokeWidth: 1, originX: 'center', originY: 'center', type: 'ruler' }));
+            rulerElements.push(new fabric.Line([heightPosition - tickSize, halfHeight, heightPosition + tickSize, halfHeight], { stroke: fillColor, strokeWidth: 1, originX: 'center', originY: 'center', type: 'ruler' }));
+            
+            // Texto vertical, mas aparece na horizontal por não ter ângulo
+            rulerElements.push(new fabric.Text(textHeight, {
+                fontSize: 14, fill: fillColor, left: heightPosition + tickSize + 2, top: 0, originX: 'left', originY: 'center', type: 'ruler'
+            }));
+
+            return rulerElements;
+        }
+
+
+        /**
+         * Baixa o conteúdo do Canvas como imagem PNG.
+         */
+        function downloadImage() {
+            if (!canvas) return;
+
+            const dataURL = canvas.toDataURL({
+                format: 'png',
+                quality: 1
+            });
+
+            const link = document.createElement('a');
+            link.href = dataURL;
+            link.download = 'Mapeamento_Patologico.png';
+            
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        }
+    </script>
+</body>
+</html>
